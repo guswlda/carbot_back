@@ -1,7 +1,7 @@
 const express = require('express');
 const pool = require('./database/database'); // database.js에서 pool 불러오기
 const app = express();
-const port = 8000;
+const port = 8001;
 const session = require('express-session');
 const bodyParser = require('body-parser');
 
