@@ -2,13 +2,39 @@ const database = require('../../database/database'); // database 가져오기
 const nodemailer = require('nodemailer'); // nodemailer
 const dotenv = require('dotenv');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 dotenv.config();
 
 // 회원 가입
 const signUp = async (req, res) => {
   try {
-    const hash = await bcrypt.hash(req.body.customer_pw, salt); // 비밀번호 해시 생성
+    // 이메일 중복 검사
+    const emailCheck = await database.query(
+      `SELECT * FROM customers WHERE customer_email = $1`,
+      [req.body.customer_email]
+    );
+    if (emailCheck.rows.length > 0) {
+      return res.status(400).json({ message: '이미 사용 중인 이메일입니다.' });
+    }
+
+    // 아이디 중복 검사
+    const idCheck = await database.query(
+      `SELECT * FROM customers WHERE customer_id = $1`,
+      [req.body.customer_id]
+    );
+    if (idCheck.rows.length > 0) {
+      return res.status(400).json({ message: '이미 사용 중인 아이디입니다.' });
+    }
+
+    // 비밀번호 해싱
+    const salt = await bcrypt.genSalt(10);
+    const hash = await bcrypt.hash(req.body.customer_pw, salt);
+
+    // 생년월일 포맷 설정
+    const birthYear = req.body.customer_birth;
+    const formattedBirthDate =
+      birthYear.length === 4 ? `${birthYear}-01-01` : birthYear;
 
     const values = [
       req.body.customer_id,
@@ -17,55 +43,57 @@ const signUp = async (req, res) => {
       req.body.customer_name,
       req.body.customer_phone,
       req.body.customer_gender,
-      req.body.customer_birth,
+      formattedBirthDate,
       req.body.customer_city,
       req.body.customer_has_car,
       new Date(),
-      new Date(),
-      req.body.customer_status,
     ];
 
     await database.query(
       `INSERT INTO customers 
       (customer_id, customer_pw, customer_email, customer_name, customer_phone, 
-      customer_gender, customer_birth, customer_city, customer_has_car, 
-      customer_created_at, customer_updated_at, customer_status) 
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      customer_gender, customer_birth, customer_city, customer_car, 
+      created_at) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       values
     );
 
-    return res.status(201).json({ message: 'Account Created Successfully' });
+    return res.status(201).json({ message: '회원 가입을 완료하였습니다.' });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
 };
 
 // 고객 로그인
+
+const secretKey = 'YOUR_SECRET_KEY'; // JWT 시크릿 키를 설정하세요
+
 const customLogin = async (req, res) => {
   const { customer_id, customer_pw } = req.body;
-
   try {
     const result = await database.query(
       'SELECT * FROM customers WHERE customer_id = $1',
       [customer_id]
     );
     const user = result.rows[0];
-
-    if (!user) {
+    if (!user || !(await bcrypt.compare(customer_pw, user.customer_pw))) {
       return res
         .status(401)
         .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
     }
 
-    const match = await bcrypt.compare(customer_pw, user.customer_pw);
-    if (!match) {
-      return res
-        .status(401)
-        .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
-    }
-
+    // 세션에 사용자 정보 저장
     req.session.userId = user.customer_id;
-    return res.json({ message: '고객님 로그인 돼었습니다.' });
+    req.session.userType = 'customer';
+
+    // JWT 생성
+    const token = jwt.sign(
+      { userId: user.customer_id, userType: 'customer' },
+      secretKey,
+      { expiresIn: '1h' } // 토큰 유효 기간 설정 (예: 1시간)
+    );
+
+    return res.json({ message: '고객님 로그인 하였습니다.', token });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -74,29 +102,20 @@ const customLogin = async (req, res) => {
 // 관리자 로그인
 const adminLogin = async (req, res) => {
   const { admin_id, admin_pw } = req.body;
-
   try {
     const result = await database.query(
       'SELECT * FROM admins WHERE admin_id = $1',
       [admin_id]
     );
     const admin = result.rows[0];
-
-    if (!admin) {
+    if (!admin || admin_pw !== admin.admin_pw) {
       return res
         .status(401)
         .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
     }
-
-    // 평문 비밀번호 비교
-    if (admin_pw !== admin.admin_pw) {
-      return res
-        .status(401)
-        .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
-    }
-
     req.session.userId = admin.admin_id;
-    return res.json({ message: '관리자님 로그인 돼었습니다.' });
+    req.session.userType = 'admin'; // 관리자 세션 타입 설정
+    return res.json({ message: '관리자님 로그인 하였습니다.' });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -105,42 +124,60 @@ const adminLogin = async (req, res) => {
 // 딜러 로그인
 const dealerLogin = async (req, res) => {
   const { employee_number, dealer_pw } = req.body;
-
   try {
     const result = await database.query(
       'SELECT * FROM dealers WHERE employee_number = $1',
       [employee_number]
     );
     const dealer = result.rows[0];
-
-    if (!dealer) {
+    if (!dealer || dealer_pw !== dealer.dealer_pw) {
       return res
         .status(401)
         .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
     }
-
-    if (dealer_pw !== dealer.dealer_pw) {
-      return res
-        .status(401)
-        .json({ message: '아이디와 비밀번호가 맞지 않습니다.' });
-    }
-
     req.session.userId = dealer.employee_number;
-    return res.json({ message: '영업팀 로그인 돼었습니다.' });
+    req.session.userType = 'dealer'; // 딜러 세션 타입 설정
+    return res.json({ message: '영업팀 로그인 하였습니다.' });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
 };
 
-// 고객 로그 아웃
-const customLogout = async (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.status(500).json({ message: 'Logout failed' });
-    }
-    res.clearCookie('connect.sid');
-    return res.json({ message: 'Logout successful' });
-  });
+// 고객, 딜러, 관리자 로그 아웃
+const logoutAll = (req, res) => {
+  const { userType } = req.session;
+
+  // 요청된 사용자 유형에 맞는 세션이 없으면 오류 반환
+  if (!userType) {
+    return res.status(400).json({ error: '로그인된 사용자가 없습니다.' });
+  }
+
+  // 고객 로그아웃 요청
+  if (userType === 'customer') {
+    req.session.destroy((err) => {
+      if (err) return res.status(500).json({ error: '고객 로그아웃 실패' });
+      res.clearCookie('connect.sid');
+      return res.status(200).json({ message: '고객님 로그아웃 되었습니다.' });
+    });
+  }
+
+  // 딜러 로그아웃 요청
+  else if (userType === 'dealer') {
+    req.session.destroy((err) => {
+      if (err) return res.status(500).json({ error: '딜러 로그아웃 실패' });
+      res.clearCookie('connect.sid');
+      return res.status(200).json({ message: '딜러님 로그아웃 되었습니다.' });
+    });
+  }
+
+  // 관리자 로그아웃 요청
+  else if (userType === 'admin') {
+    req.session.destroy((err) => {
+      if (err) return res.status(500).json({ error: '관리자 로그아웃 실패' });
+      res.clearCookie('connect.sid');
+      return res.status(200).json({ message: '관리자님 로그아웃 되었습니다.' });
+    });
+  }
 };
 
 // 아이디 찾기
@@ -264,13 +301,13 @@ const verifyUser = async (req, res) => {
     } else {
       return res
         .status(404)
-        .json({ success: false, message: 'User not found' });
+        .json({ success: false, message: '사용자 ID를 찾을 수 없습니다.' });
     }
   } catch (error) {
     console.error('Error:', error);
     return res
       .status(500)
-      .json({ success: false, message: 'Internal server error' });
+      .json({ success: false, message: '서버 오류가 났습니다.' });
   }
 };
 
@@ -283,24 +320,24 @@ const updatePassword = async (req, res) => {
     const newhashedPassword = await bcrypt.hash(new_password, salt); // 비밀번호 해시화
 
     // 데이터베이스 쿼리
-    const changes = `UPDATE customers SET customer_pw = $1, customer_updated_at = NOW() WHERE customer_id = $2`;
+    const changes = `UPDATE customers SET customer_pw = $1, updated_at = NOW() WHERE customer_id = $2`;
     const pw_values = [newhashedPassword, customer_id];
     await database.query(changes, pw_values);
 
     // 응답으로 성공 메시지 반환
     res
       .status(200)
-      .json({ success: true, message: 'Password updated successfully' });
+      .json({ success: true, message: '패스워드를 업데이트 하였습니다.' });
   } catch (error) {
     console.error('Error:', error); // 오류 로깅
-    res.status(500).json({ success: false, message: 'Internal server error' });
+    res.status(500).json({ success: false, message: '서버 오류가 났습니다.' });
   }
 };
 
 module.exports = {
   signUp,
   customLogin,
-  customLogout,
+  logoutAll,
   dealerLogin,
   adminLogin,
   findId,
