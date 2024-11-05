@@ -1,3 +1,9 @@
 /node_modules
 
 .env
+
+private.key
+
+axiomatic-set-440302-b2-cc350bb872e6.json
+
+credentials.json
